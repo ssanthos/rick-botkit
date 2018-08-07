@@ -164,6 +164,165 @@ if (!process.env.clientId || !process.env.clientSecret) {
       console.log('NOTE: Botkit Studio functionality has not been enabled');
       console.log('To enable, pass in a studio_token parameter with a token from https://studio.botkit.ai/');
   }
+
+  controller.hears(['erase'], 'direct_message,direct_mention,mention', function(bot, message) {
+      bot.startConversation(message, function(err, convo) {
+          if (!err) {
+              controller.storage.users.get(message.user, (err, user) => {
+                  if (err) {
+                      convo.say(`Dude, I don't even know you`)
+                      return convo.next()
+                  }
+
+                  convo.ask("I'll erase my dossier on you. Sure about that?", [
+                      {
+                          pattern: bot.utterances.yes,
+                          callback: function(response, convo) {
+                              convo.say(`As you wish...`);
+
+                              controller.storage.users.delete(message.user, function(err) {
+                                  convo.say(`You're gone. Poof!`)
+                                  convo.next();
+                              })
+                          }
+                      },
+                      {
+                          pattern: bot.utterances.no,
+                          callback: function(response, convo) {
+                              // stop the conversation. this will cause it to end with status == 'stopped'
+                              convo.say(`That's what I thought. Wise choice`);
+                              convo.stop();
+                          }
+                      },
+                      {
+                          default: true,
+                          callback: function(response, convo) {
+                              convo.repeat();
+                              convo.next();
+                          }
+                      }
+                  ])
+
+              })
+          }
+      })
+  })
+
+  controller.hears(['register', 'setup'], 'direct_message', function(bot, message) {
+      controller.storage.users.get(message.user, function(err, user) {
+          if (err) {
+              user = null
+          }
+          if (user) {
+              bot.reply('You have registered already!')
+              return
+          } else {
+              bot.startConversation(message, function(err, convo) {
+                  if (err) {
+                      return
+                  }
+                  convo.say(`Alright! Let's get you all squanched up!`)
+                  convo.ask(`What do I call you?`, (response, convo) => {
+                      convo.sayFirst(`OK! I'll call you ${response.text} from now on`)
+
+                      convo.ask(`What is your favorite color?`, (response, convo) => {
+                          convo.sayFirst(`OK! I'll set the color as ${response.text} from now on`)
+                          convo.next()
+                      }, {'key': 'color'})
+
+                      convo.next()
+                  }, {'key': 'nickname'})
+
+
+
+                  convo.on('end', convo => {
+                      if (convo.status === 'completed') {
+                        bot.reply(message, 'OK! Creating a dossier on you...hang tight');
+
+                        user = {
+                            id: message.user,
+                            name : convo.extractResponse('nickname'),
+                            color : convo.extractResponse('color')
+                        }
+                        controller.storage.users.save(user, function(err, id) {
+                            setTimeout(() => {
+                                bot.reply(message, `All done, ${user.name}! Welcome, and see you around!`);
+                            }, 1000)
+                        });
+                      }
+                  })
+              })
+          }
+      })
+  })
+
+  controller.hears(['what is my name', 'who am i'], 'direct_message,direct_mention,mention', function(bot, message) {
+
+      controller.storage.users.get(message.user, function(err, user) {
+          if (user && user.name) {
+              bot.reply(message, `Your name is ${user.name}. Your favorite color is ${user.color}`);
+          } else {
+              bot.startConversation(message, function(err, convo) {
+                  if (!err) {
+                      convo.say('I do not know your name yet!');
+                      convo.ask('What should I call you?', function(response, convo) {
+                          convo.ask('You want me to call you `' + response.text + '`?', [
+                              {
+                                  pattern: 'yes',
+                                  callback: function(response, convo) {
+                                      // since no further messages are queued after this,
+                                      // the conversation will end naturally with status == 'completed'
+                                      convo.next();
+                                  }
+                              },
+                              {
+                                  pattern: 'no',
+                                  callback: function(response, convo) {
+                                      // stop the conversation. this will cause it to end with status == 'stopped'
+                                      convo.stop();
+                                  }
+                              },
+                              {
+                                  default: true,
+                                  callback: function(response, convo) {
+                                      convo.repeat();
+                                      convo.next();
+                                  }
+                              }
+                          ]);
+
+                          convo.next();
+
+                      }, {'key': 'nickname'}); // store the results in a field called nickname
+
+                      convo.on('end', function(convo) {
+                          if (convo.status == 'completed') {
+                              bot.reply(message, 'OK! I will update my dossier...');
+
+                              controller.storage.users.get(message.user, function(err, user) {
+                                  if (!user) {
+                                      user = {
+                                          id: message.user,
+                                      };
+                                  }
+                                  user.name = convo.extractResponse('nickname');
+                                  controller.storage.users.save(user, function(err, id) {
+                                      bot.reply(message, 'Got it. I will call you ' + user.name + ' from now on.');
+                                  });
+                              });
+
+
+
+                          } else {
+                              // this happens if the conversation ended prematurely for some reason
+                              bot.reply(message, 'OK, nevermind!');
+                          }
+                      });
+                  }
+              });
+          }
+      });
+  });
 }
 
 
