@@ -48,23 +48,48 @@ function listenForErase(controller) {
     })
 }
 
-function getDateFromText(text) {
-    const date = chrono.parseDate(text)
-    if (date) {
-        const pureDate = moment(date).startOf('day')
-    } else {
-        return null
+function* register(controller, bot, message, resume) {
+    console.log('here');
+    const { err, user } = yield controller.storage.users.get(message.user, resume)
+    console.log('here 1');
+    if (err) {
+        user = null
     }
+    if (user) {
+        bot.reply('You have registered already!')
+        return
+    }
+    console.log('here 2');
+    let cr = null
+    cr = yield bot.startConversation(message, resume)
+    console.log(cr);
+    console.log('here 3');
+    cr.convo.say(`Alright! Let's get you all squanched up!`)
 
-    // if (date) {
-    //     const pureStartDate = moment(date, 'YYYY-MM-DD').startOf('day')
-    //     const todayDate = moment(new Date()).startOf('day')
-    //     const range = moment.range(pureStartDate, todayDate)
-    // } else {
-    //     return null
-    // }
+    cr = yield cr.convo.ask(`When did you start the challenge?`, resume, {'key': 'startdate'})
+    const startDate = chrono.parseDate(cr.response.text)
 
+    cr.convo.say(`(Response : ${startDate})`)
+    if (startDate) {
+        // askIfMissedDays(response, convo)
+        cr.convo.next()
+    } else {
+        cr.convo.repeat()
+    }
+}
 
+function runRegister(controller, bot, message) {
+    let end = false
+    const resume = (...args) => {
+        if (end) {
+            return
+        }
+        const result = { ...args }
+        const { done } = gen_register.next(result)
+        end = done
+    }
+    const gen_register = register(controller, bot, message, resume)
+    resume(null)
 }
 
 function askGithubRepoUrl(response, convo) {
@@ -78,6 +103,7 @@ function askDatesMissed(response, convo) {
     convo.ask(`Which dates did you miss?`, function(response, convo) {
         const dates = chrono.parseDate(response.text)
         convo.say(`(${dates})`)
+        console.log(JSON.stringify(chrono.parse(response.text)));
         askGithubRepoUrl(response, convo)
         convo.next()
     }, { key : 'missed_dates' })
@@ -134,40 +160,41 @@ function askNickname(response, convo) {
 
 function listenForRegister(controller) {
     controller.hears(['register', 'setup'], 'direct_message', function(bot, message) {
-        controller.storage.users.get(message.user, function(err, user) {
-            if (err) {
-                user = null
-            }
-            if (user) {
-                bot.reply('You have registered already!')
-                return
-            } else {
-                bot.startConversation(message, function(err, convo) {
-                    if (err) {
-                        return
-                    }
-                    convo.say(`Alright! Let's get you all squanched up!`)
-                    askStartDate(null, convo)
-
-                    convo.on('end', convo => {
-                        if (convo.status === 'completed') {
-                            bot.reply(message, 'All set! Creating a dossier on you...hang tight');
-
-                            user = {
-                                id: message.user,
-                                name : convo.extractResponse('nickname'),
-                                startdate : convo.extractResponse('startdate')
-                            }
-                            // controller.storage.users.save(user, function(err, id) {
-                                setTimeout(() => {
-                                    bot.reply(message, `Done! Welcome ${user.name} :wave:!`);
-                                }, 1000)
-                            // });
-                        }
-                    })
-                })
-            }
-        })
+        runRegister(controller, bot, message)
+        // controller.storage.users.get(message.user, function(err, user) {
+        //     if (err) {
+        //         user = null
+        //     }
+        //     if (user) {
+        //         bot.reply('You have registered already!')
+        //         return
+        //     } else {
+        //         bot.startConversation(message, function(err, convo) {
+        //             if (err) {
+        //                 return
+        //             }
+        //             convo.say(`Alright! Let's get you all squanched up!`)
+        //             askStartDate(null, convo)
+        //
+        //             convo.on('end', convo => {
+        //                 if (convo.status === 'completed') {
+        //                     bot.reply(message, 'All set! Creating a dossier on you...hang tight');
+        //
+        //                     user = {
+        //                         id: message.user,
+        //                         name : convo.extractResponse('nickname'),
+        //                         startdate : convo.extractResponse('startdate')
+        //                     }
+        //                     // controller.storage.users.save(user, function(err, id) {
+        //                         setTimeout(() => {
+        //                             bot.reply(message, `Done! Welcome ${user.name} :wave:!`);
+        //                         }, 1000)
+        //                     // });
+        //                 }
+        //             })
+        //         })
+        //     }
+        // })
     })
 }
 
