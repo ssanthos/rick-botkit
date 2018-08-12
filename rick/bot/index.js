@@ -1,88 +1,28 @@
 const chrono = require('chrono-node')
-const Moment = require('moment');
-const MomentRange = require('moment-range');
 
-const moment = MomentRange.extendMoment(Moment);
-
-function listenForErase(controller) {
-    controller.hears(['erase'], 'direct_message,direct_mention,mention', function(bot, message) {
-        bot.startConversation(message, function(err, convo) {
-            if (!err) {
-                controller.storage.users.get(message.user, (err, user) => {
-                    if (err) {
-                        convo.say(`Dude, I don't even know you`)
-                        return convo.next()
-                    }
-                    
-                    convo.ask("I'll erase my dossier on you. Sure about that?", [
-                        {
-                            pattern: bot.utterances.yes,
-                            callback: function(response, convo) {
-                                convo.say(`As you wish...`);
-                                
-                                controller.storage.users.delete(message.user, function(err) {
-                                    convo.say(`You're gone. Poof!`)
-                                    convo.next();
-                                })
-                            }
-                        },
-                        {
-                            pattern: bot.utterances.no,
-                            callback: function(response, convo) {
-                                // stop the conversation. this will cause it to end with status == 'stopped'
-                                convo.say(`That's what I thought. Wise choice`);
-                                convo.stop();
-                            }
-                        },
-                        {
-                            default: true,
-                            callback: function(response, convo) {
-                                convo.repeat();
-                                convo.next();
-                            }
-                        }
-                    ])
-                })
-            }
+function listenForTest(controller) {
+    controller.hears(['test'], 'direct_message,direct_mention,mention', function(bot, message) {
+        const user = {
+            id : message.user,
+            name : 'testname'
+        }
+        controller.storage.users.save(user, (err) => {
+            bot.reply(message, err ? 'Something went wrong' : 'Done!')
         })
     })
 }
 
-// function* register(controller, bot, message, resume) {
-    
-//     let user = null
-//     try {
-//         user = yield controller.storage.users.get(message.user, resume)
-//     } catch (err) {
-//     }
-    
-//     const cr = yield bot.startConversation(message, resume)
-    
-//     // if (err) {
-//     //     user = null
-//     // }
-//     // if (user) {
-//     //     bot.reply('You have registered already!')
-//     //     return
-//     // }
-//     // console.log('here 2');
-//     // let cr = null
-//     // cr = yield bot.startConversation(message, resume)
-//     // console.log(cr);
-//     // console.log('here 3');
-//     // cr.convo.say(`Alright! Let's get you all squanched up!`)
-    
-//     // cr = yield cr.convo.ask(`When did you start the challenge?`, resume, {'key': 'startdate'})
-//     // const startDate = chrono.parseDate(cr.response.text)
-    
-//     // cr.convo.say(`(Response : ${startDate})`)
-//     // if (startDate) {
-//     //     // askIfMissedDays(response, convo)
-//     //     cr.convo.next()
-//     // } else {
-//     //     cr.convo.repeat()
-//     // }
-// }
+function listenForErase(controller) {
+    controller.hears(['erase'], 'direct_message,direct_mention,mention', function(bot, message) {
+        runErase(controller, bot, message)
+    })
+}
+
+function listenForGithubRegister(controller) {
+    controller.hears(['github'], 'direct_message,direct_mention,mention', function(bot, message) {
+        runGithubRegister(controller, bot, message)
+    })
+}
 
 function* registerSequence() {
     yield { say : "Alright! let's get you all squanched up!" }
@@ -123,19 +63,47 @@ function* registerSequence() {
     }
 }
 
-function runRegister(controller, bot, message) {
-    
-    const gen_register = registerSequence()
+function setupSequence(gen, controller, bot, message) {
+    const gen_register = gen()
     const resume = (response, convo) => {
         if (response && response.text === 'abort') {
             return convo.stop()
         }
-        const { done, value } = gen_register.next((response || {}).text)
+        const err = response instanceof Error ? response : null
+        const { done, value } = err ? gen_register.throw(err) : gen_register.next((response || {}).text)
         if (done) {
             return convo.next()
         }
-        const { say = null, ask = null, validate = () => true, key = null } = value
+        const { 
+            say = null, ask = null, validate = () => true, key = null 
+        } = value
         let { options = [] } = value
+        const { operation = null, timeout = 0 } = value
+        if (operation) {
+            if (operation === 'delay') {
+                setTimeout(() => {
+                    return resume(null, convo)
+                }, timeout)
+            }
+            if (operation === 'get_user') {
+                controller.storage.users.get(message.user, (err, user) => {
+                    if (err) {
+                        return resume(err, convo)
+                    } else {
+                        return resume({ text : user }, convo)
+                    }
+                })
+                
+            } else if (operation === 'delete_user') {
+                controller.storage.users.delete(message.user, (err, user) => {
+                    if (err) {
+                        return resume(err, convo)
+                    } else {
+                        return resume(null, convo)
+                    }
+                })
+            }
+        }
         if (say) {
             convo.say(say)
             return resume(null, convo)
@@ -177,6 +145,12 @@ function runRegister(controller, bot, message) {
             convo.next()
         }
     }
+    return { resume }
+}
+
+function runRegister(controller, bot, message) {
+    const { resume } = setupSequence(registerSequence, controller, bot, message)
+
     bot.startConversation(message, (err, convo) => {
         convo.on('end', convo => {
             if (convo.status === 'completed') {
@@ -203,109 +177,85 @@ function runRegister(controller, bot, message) {
     })
 }
 
-// function askGithubRepoUrl(response, convo) {
-//     convo.ask(`What's your github repo url for #100daysofcode?`, function(response, convo) {
-//         convo.say(`(${response.text})`)
-//         convo.next()
-//     }, { key : 'github_repo_url' })
-// }
-
-// function askDatesMissed(response, convo) {
-//     convo.ask(`Which dates did you miss?`, function(response, convo) {
-//         const dates = chrono.parseDate(response.text)
-//         convo.say(`(${dates})`)
-//         console.log(JSON.stringify(chrono.parse(response.text)));
-//         askGithubRepoUrl(response, convo)
-//         convo.next()
-//     }, { key : 'missed_dates' })
-// }
-
-// function askIfMissedDays(response, convo) {
-//     convo.ask(`Did you miss any days?`, [
-//         {
-//             pattern: bot.utterances.yes,
-//             callback: (response, convo) => {
-//                 askDatesMissed(response, convo)
-//                 convo.next()
-//             },
-//         },
-//         {
-//             pattern: bot.utterances.no,
-//             callback: (response, convo) => {
-//                 askGithubRepoUrl(response, convo)
-//                 convo.next()
-//             }
-//         },
-//         {
-//             default: true,
-//             callback: function(response, convo) {
-//                 convo.repeat();
-//                 convo.next();
-//             }
-//         }
-//     ], { key : 'has_missed_dates' })
-// }
-
-// function askStartDate(response, convo) {
-//     convo.ask(`When did you start the challenge?`, function(response, convo) {
-//         const startDate = chrono.parseDate(response.text)
+function* eraseSequence() {
+    try {
+        const user = yield { operation : 'get_user' }
         
-//         convo.say(`(Response : ${startDate})`)
-//         if (startDate) {
-//             askIfMissedDays(response, convo)
-//             convo.next()
-//         } else {
-//             convo.repeat()
-//         }
-//     }, {'key': 'startdate'});
-// }
+        const confirmed = yield {
+            ask : "I'll erase my dossier on you. Sure about that?",
+            options : [
+                {
+                    pattern : bot.utterances.yes,
+                    answer : true
+                },
+                {
+                    pattern : bot.utterances.no,
+                    answer : false
+                },
+            ]
+        }
 
-// function askNickname(response, convo) {
-//     convo.ask(`What do I call you?`, function(response, convo) {
-//         convo.say(`(Response : ${response.text})`)
-//         // convo.sayFirst(`OK! I'll call you ${response.text} from now on`)
-//         askStartDate(response, convo);
-//         convo.next();
-//     }, {'key': 'nickname'});
-// }
+        if (!confirmed) {
+            yield { say : `That's what I thought. Wise choice` }
+            return
+        }
+
+        yield { say : `As you wish...` }
+
+        yield { operation : 'delete_user' }
+
+        yield { say : `You're gone. Poof!` }
+
+        return
+    } catch (err) {
+        
+    }
+    yield { say : `Dude, I don't even know you` }
+    yield { operation : 'delay', timeout : 1000 }
+    
+}
+
+function runErase(controller, bot, message) {
+    const { resume } = setupSequence(eraseSequence, controller, bot, message)
+    
+    bot.startConversation(message, (err, convo) => {
+        convo.on('end', convo => {
+            if (convo.status !== 'completed') {
+                bot.reply(message, 'Aborting!')
+            }
+        })
+        return resume(null, convo)
+    })
+}
+
+function* githubRegisterSequence(controller, bot, message) {
+    // const url = yield {
+    //     ask : `What's your github repo url for #100daysofcode?`,
+    //     key : 'github_repo_url'
+    // }
+    yield {
+        say : 'Open https://github.com/login/oauth/authorize to authorize me'
+    }
+}
+
+function runGithubRegister(controller, bot, message) {
+    const { resume } = setupSequence(githubRegisterSequence, controller, bot, message)
+    
+    bot.startConversation(message, (err, convo) => {
+        convo.on('end', convo => {
+            if (convo.status === 'completed') {
+                bot.reply(message, 'Done!')
+            } else {
+                bot.reply(message, 'Aborting!')
+            }
+        })
+        return resume(null, convo)
+    })
+}
 
 function listenForRegister(controller) {
     controller.hears(['register', 'setup'], 'direct_message', function(bot, message) {
         runRegister(controller, bot, message)
-        // controller.storage.users.get(message.user, function(err, user) {
-        //     if (err) {
-        //         user = null
-        //     }
-        //     if (user) {
-        //         bot.reply('You have registered already!')
-        //         return
-        //     } else {
-        //         bot.startConversation(message, function(err, convo) {
-        //             if (err) {
-        //                 return
-        //             }
-        //             convo.say(`Alright! Let's get you all squanched up!`)
-        //             askStartDate(null, convo)
-        //
-        //             convo.on('end', convo => {
-        //                 if (convo.status === 'completed') {
-        //                     bot.reply(message, 'All set! Creating a dossier on you...hang tight');
-        //
-        //                     user = {
-        //                         id: message.user,
-        //                         name : convo.extractResponse('nickname'),
-        //                         startdate : convo.extractResponse('startdate')
-        //                     }
-        //                     // controller.storage.users.save(user, function(err, id) {
-        //                         setTimeout(() => {
-        //                             bot.reply(message, `Done! Welcome ${user.name} :wave:!`);
-        //                         }, 1000)
-        //                     // });
-        //                 }
-        //             })
-        //         })
-        //     }
-        // })
     })
 }
 
@@ -325,6 +275,8 @@ function init(controller) {
     listenForRegister(controller)
     listenForErase(controller)
     listenForWhoami(controller)
+    listenForTest(controller)
+    listenForGithubRegister(controller)
 }
 
 module.exports = {
