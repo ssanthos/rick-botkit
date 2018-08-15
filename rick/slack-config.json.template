@@ -1,0 +1,5 @@
+{
+    "base_url" : "<app_url>",
+    "client_id":"<YOUR_GITHUB_APP_CLIENT_ID>",
+    "client_secret" : "<YOUR_GITHUB_APP_CLIENT_SECRET>"
+}

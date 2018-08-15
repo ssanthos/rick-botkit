@@ -111,6 +111,16 @@ if (!process.env.clientId || !process.env.clientSecret) {
             layout: 'layouts/default'
         });
     })
+
+    webserver.get('/callbacks/github', (req, res) => {
+        bot.handleGithubCallback(req, res)
+        // res.render('index', {
+        //     domain: req.get('host'),
+        //     protocol: req.protocol,
+        //     glitch_domain:  process.env.PROJECT_DOMAIN,
+        //     layout: 'layouts/default'
+        // });
+    })
     // Set up a simple storage backend for keeping a record of customers
     // who sign up for the app via the oauth
     require(__dirname + '/components/user_registration.js')(controller);

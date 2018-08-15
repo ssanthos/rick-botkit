@@ -1,4 +1,11 @@
 const chrono = require('chrono-node')
+const SlackConfig = require('../slack-config.json')
+const Tokens = require('csrf')
+const util = require('util')
+const qs = require('qs')
+const axios = require('axios')
+
+const tokens = new Tokens()
 
 function listenForTest(controller) {
     controller.hears(['test'], 'direct_message,direct_mention,mention', function(bot, message) {
@@ -70,9 +77,16 @@ function setupSequence(gen, controller, bot, message) {
             return convo.stop()
         }
         const err = response instanceof Error ? response : null
-        const { done, value } = err ? gen_register.throw(err) : gen_register.next((response || {}).text)
+        const result = err ? gen_register.throw(err) : gen_register.next((response || {}).text)
+        const { done, value } = result
         if (done) {
             return convo.next()
+        }
+        if (value.then) {
+            value.then(v => {
+                return resume({ text : v }, convo)
+            })
+            return 
         }
         const { 
             say = null, ask = null, validate = () => true, key = null 
@@ -233,9 +247,40 @@ function* githubRegisterSequence(controller, bot, message) {
     //     ask : `What's your github repo url for #100daysofcode?`,
     //     key : 'github_repo_url'
     // }
-    yield {
-        say : 'Open https://github.com/login/oauth/authorize to authorize me'
+    const callback_url = `${SlackConfig.base_url}/callbacks/github`
+    
+    let secret = ''
+    try {
+        secret = yield util.promisify(tokens.secret.bind(tokens))()
+    } catch(err) {
+        console.log(err)
+        throw err
     }
+    
+    const state = tokens.create(secret)
+
+    const auth_link = `https://github.com/login/oauth/authorize?client_id=${SlackConfig.client_id}&scope=public_repo&redirect_uri=${callback_url}&state=${state}`
+    yield {
+        say : `\<${auth_link}|Authorize me>. You have 120 seconds. Go!`
+    }
+}
+
+async function handleGithubCallback(req, res) {
+    const { code, state } = req.query
+    
+    // TODO: verify csrf token
+    const response = await axios.post('https://github.com/login/oauth/access_token', {
+        client_id : SlackConfig.client_id,
+        client_secret : SlackConfig.client_secret,
+        code,
+        state,
+    })
+
+    const { access_token } = qs.parse(response.data)
+    
+    console.log(access_token)
+    
+    res.send('Yo!')
 }
 
 function runGithubRegister(controller, bot, message) {
@@ -280,5 +325,6 @@ function init(controller) {
 }
 
 module.exports = {
-    init
+    init,
+    handleGithubCallback
 }
