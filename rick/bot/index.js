@@ -1,74 +1,17 @@
-const chrono = require('chrono-node')
-const SlackConfig = require('../slack-config.json')
-const Tokens = require('csrf')
-const util = require('util')
+const EventEmitter = require('events')
 const qs = require('qs')
+const Promise = require('bluebird')
+
+const chrono = require('chrono-node')
+const Tokens = require('csrf')
 const axios = require('axios')
+
+const SlackConfig = require('../slack-config.json')
+
 
 const tokens = new Tokens()
 
-function listenForTest(controller) {
-    controller.hears(['test'], 'direct_message,direct_mention,mention', function(bot, message) {
-        const user = {
-            id : message.user,
-            name : 'testname'
-        }
-        controller.storage.users.save(user, (err) => {
-            bot.reply(message, err ? 'Something went wrong' : 'Done!')
-        })
-    })
-}
-
-function listenForErase(controller) {
-    controller.hears(['erase'], 'direct_message,direct_mention,mention', function(bot, message) {
-        runErase(controller, bot, message)
-    })
-}
-
-function listenForGithubRegister(controller) {
-    controller.hears(['github'], 'direct_message,direct_mention,mention', function(bot, message) {
-        runGithubRegister(controller, bot, message)
-    })
-}
-
-function* registerSequence() {
-    yield { say : "Alright! let's get you all squanched up!" }
-    const name = yield { ask : "What do I call you?", key : 'name' }
-    yield { say : `Will call you ${name}` }
-    
-    yield { 
-        ask : "When did you start the challenge?",
-        validate : date => chrono.parseDate(date),
-        key : 'start_date',
-    }
-    
-    const didMissDays = yield {
-        ask : "Did you miss any days?",
-        options : [
-            {
-                pattern : bot.utterances.yes,
-                answer : true
-            },
-            {
-                pattern : bot.utterances.no,
-                answer : false
-            },
-        ]
-    }
-    
-    if (didMissDays) {
-        yield {
-            ask : "Which days did you miss?",
-            validate : text => true,
-            key : 'missed_dates'
-        }
-    }
-    
-    yield {
-        ask : `What's your github repo url for #100daysofcode?`,
-        key : 'github_repo_url'
-    }
-}
+const githubAuthEvent = new EventEmitter()
 
 function setupSequence(gen, controller, bot, message) {
     const gen_register = gen()
@@ -98,8 +41,7 @@ function setupSequence(gen, controller, bot, message) {
                 setTimeout(() => {
                     return resume(null, convo)
                 }, timeout)
-            }
-            if (operation === 'get_user') {
+            } else if (operation === 'get_user') {
                 controller.storage.users.get(message.user, (err, user) => {
                     if (err) {
                         return resume(err, convo)
@@ -115,6 +57,24 @@ function setupSequence(gen, controller, bot, message) {
                     } else {
                         return resume(null, convo)
                     }
+                })
+            } else if (operation === 'store_user_temp_data') {
+                controller.storage.users.get(message.user, (err, user) => {
+                    if (err) {
+                        user = {
+                            id : message.user,
+                            tempdata : {}
+                        }
+                    }
+                    const { data } =  value
+                    user = { ...user, tempdata : { ...user.tempdata, ...data } }
+                    controller.storage.users.save(user, (err) => {
+                        if (err) {
+                            return resume(err, convo)
+                        } else {
+                            return resume(null, convo)
+                        }
+                    })    
                 })
             }
         }
@@ -162,28 +122,30 @@ function setupSequence(gen, controller, bot, message) {
     return { resume }
 }
 
-function runRegister(controller, bot, message) {
-    const { resume } = setupSequence(registerSequence, controller, bot, message)
+function listenForTest(controller) {
+    controller.hears(['test'], 'direct_message,direct_mention,mention', function(bot, message) {
+        const user = {
+            id : message.user,
+            name : 'testname'
+        }
+        controller.storage.users.save(user, (err) => {
+            bot.reply(message, err ? 'Something went wrong' : 'Done!')
+        })
+    })
+}
 
+function listenForErase(controller) {
+    controller.hears(['erase'], 'direct_message,direct_mention,mention', function(bot, message) {
+        runErase(controller, bot, message)
+    })
+}
+
+function runErase(controller, bot, message) {
+    const { resume } = setupSequence(eraseSequence, controller, bot, message)
+    
     bot.startConversation(message, (err, convo) => {
         convo.on('end', convo => {
-            if (convo.status === 'completed') {
-                bot.reply(message, 'All set! Creating a dossier on you...hang tight');
-                
-                user = {
-                    id: message.user,
-                    name : convo.extractResponse('name'),
-                    startdate : convo.extractResponse('start_date'),
-                    missed_dates : convo.extractResponse('missed_dates'),
-                    github_repo_url : convo.extractResponse('github_repo_url'),
-                }
-                console.log(JSON.stringify(user))
-                // controller.storage.users.save(user, function(err, id) {
-                setTimeout(() => {
-                    bot.reply(message, `Done! Welcome ${user.name} :wave:!`);
-                }, 1000)
-                // });
-            } else {
+            if (convo.status !== 'completed') {
                 bot.reply(message, 'Aborting!')
             }
         })
@@ -229,58 +191,10 @@ function* eraseSequence() {
     
 }
 
-function runErase(controller, bot, message) {
-    const { resume } = setupSequence(eraseSequence, controller, bot, message)
-    
-    bot.startConversation(message, (err, convo) => {
-        convo.on('end', convo => {
-            if (convo.status !== 'completed') {
-                bot.reply(message, 'Aborting!')
-            }
-        })
-        return resume(null, convo)
+function listenForGithubRegister(controller) {
+    controller.hears(['github'], 'direct_message,direct_mention,mention', function(bot, message) {
+        runGithubRegister(controller, bot, message)
     })
-}
-
-function* githubRegisterSequence(controller, bot, message) {
-    // const url = yield {
-    //     ask : `What's your github repo url for #100daysofcode?`,
-    //     key : 'github_repo_url'
-    // }
-    const callback_url = `${SlackConfig.base_url}/callbacks/github`
-    
-    let secret = ''
-    try {
-        secret = yield util.promisify(tokens.secret.bind(tokens))()
-    } catch(err) {
-        console.log(err)
-        throw err
-    }
-    
-    const state = tokens.create(secret)
-
-    const auth_link = `https://github.com/login/oauth/authorize?client_id=${SlackConfig.client_id}&scope=public_repo&redirect_uri=${callback_url}&state=${state}`
-    yield {
-        say : `\<${auth_link}|Authorize me>. You have 120 seconds. Go!`
-    }
-}
-
-async function handleGithubCallback(req, res) {
-    const { code, state } = req.query
-    
-    // TODO: verify csrf token
-    const response = await axios.post('https://github.com/login/oauth/access_token', {
-        client_id : SlackConfig.client_id,
-        client_secret : SlackConfig.client_secret,
-        code,
-        state,
-    })
-
-    const { access_token } = qs.parse(response.data)
-    
-    console.log(access_token)
-    
-    res.send('Yo!')
 }
 
 function runGithubRegister(controller, bot, message) {
@@ -298,10 +212,168 @@ function runGithubRegister(controller, bot, message) {
     })
 }
 
+function* githubRegisterSequence(controller, bot, message) {
+    const url = yield {
+        ask : `What's your github repo url for #100daysofcode?`
+    }
+    const callback_url = `${SlackConfig.base_url}/callbacks/github`
+    
+    let secret = ''
+    try {
+        secret = yield Promise.promisify(tokens.secret.bind(tokens))()
+    } catch(err) {
+        console.log(err)
+        throw err
+    }
+    
+    const state = tokens.create(secret)
+
+    const auth_link = `https://github.com/login/oauth/authorize?client_id=${SlackConfig.client_id}&scope=public_repo&redirect_uri=${callback_url}&state=${state}`
+    yield {
+        say : `\<${auth_link}|Authorize me>. You have 120 seconds. Go!`
+    }
+
+    let access_token = null
+    try {
+        access_token = yield new Promise((resolve, reject) => {
+            let successHandler = null
+            let errorHandler = null
+            let unsubscribed = false
+            let unsubscribe = () => {
+                if (!unsubscribed) {
+                    unsubscribed = true
+                    githubAuthEvent.off('success', successHandler)
+                    githubAuthEvent.off('error', errorHandler)
+                }   
+            }
+            successHandler = access_token => {
+                console.log('success', access_token);
+                unsubscribe()
+                resolve(access_token)
+            }
+            errorHandler = err => {
+                console.error('err');
+                unsubscribe()
+                reject(err)
+            }
+            githubAuthEvent.on('success', successHandler)
+            githubAuthEvent.on('error', errorHandler)
+            setTimeout(() => {
+                unsubscribe()
+                reject(new Promise.TimeoutError())
+            }, 120 * 1000)
+        })
+    } catch(err) {
+        console.error(err);
+        yield {
+            say : 'Tough luck. If only you could follow a simple instruction. Try again later.'
+        }
+        return
+    }
+
+    yield { operation : 'store_user_temp_data', data : { access_token, github_repo_url : url } }
+
+    yield {
+        say : `Great. Let me check of what you've been doing so far.`
+    }
+
+}
+
+async function handleGithubCallback(req, res) {
+    const { code, state } = req.query
+    
+    // TODO: verify csrf token
+    const response = await axios.post('https://github.com/login/oauth/access_token', {
+        client_id : SlackConfig.client_id,
+        client_secret : SlackConfig.client_secret,
+        code,
+        state,
+    })
+
+    const { access_token } = qs.parse(response.data)
+    
+    console.log(access_token)
+
+    githubAuthEvent.emit('success', access_token)
+    
+    res.send('Authorization successful. You may close this tab.')
+}
+
+
 function listenForRegister(controller) {
     controller.hears(['register', 'setup'], 'direct_message', function(bot, message) {
         runRegister(controller, bot, message)
     })
+}
+
+function runRegister(controller, bot, message) {
+    const { resume } = setupSequence(registerSequence, controller, bot, message)
+
+    bot.startConversation(message, (err, convo) => {
+        convo.on('end', convo => {
+            if (convo.status === 'completed') {
+                bot.reply(message, 'All set! Creating a dossier on you...hang tight');
+                
+                user = {
+                    id: message.user,
+                    name : convo.extractResponse('name'),
+                    startdate : convo.extractResponse('start_date'),
+                    missed_dates : convo.extractResponse('missed_dates'),
+                    github_repo_url : convo.extractResponse('github_repo_url'),
+                }
+                console.log(JSON.stringify(user))
+                // controller.storage.users.save(user, function(err, id) {
+                setTimeout(() => {
+                    bot.reply(message, `Done! Welcome ${user.name} :wave:!`);
+                }, 1000)
+                // });
+            } else {
+                bot.reply(message, 'Aborting!')
+            }
+        })
+        return resume(null, convo)
+    })
+}
+
+function* registerSequence() {
+    yield { say : "Alright! let's get you all squanched up!" }
+    const name = yield { ask : "What do I call you?", key : 'name' }
+    yield { say : `Will call you ${name}` }
+    
+    yield { 
+        ask : "When did you start the challenge?",
+        validate : date => chrono.parseDate(date),
+        key : 'start_date',
+    }
+    
+    const didMissDays = yield {
+        ask : "Did you miss any days?",
+        options : [
+            {
+                pattern : bot.utterances.yes,
+                answer : true
+            },
+            {
+                pattern : bot.utterances.no,
+                answer : false
+            },
+        ]
+    }
+    
+    if (didMissDays) {
+        yield {
+            ask : "Which days did you miss?",
+            validate : text => true,
+            key : 'missed_dates'
+        }
+    }
+
+    yield* githubRegisterSequence()
+    
+    // yield {
+    //     ask : `What's your github repo url for #100daysofcode?`,
+    //     key : 'github_repo_url'
+    // }
 }
 
 function listenForWhoami(controller) {
