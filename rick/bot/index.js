@@ -1,521 +1,462 @@
-const EventEmitter = require('events')
-const qs = require('qs')
-const Promise = require('bluebird')
+const EventEmitter = require('events');
+const qs = require('qs');
+const Promise = require('bluebird');
+const moment = require('moment');
 
-const chrono = require('chrono-node')
-const Tokens = require('csrf')
-const axios = require('axios')
+const chrono = require('chrono-node');
+const Tokens = require('csrf');
+const axios = require('axios');
 
-const SlackConfig = require('../slack-config.json')
+const SlackConfig = require('../slack-config.json');
 
 
-const tokens = new Tokens()
+const tokens = new Tokens();
 
-const githubAuthEvent = new EventEmitter()
+const githubAuthEvent = new EventEmitter();
 
-function setupSequence(gen, controller, bot, message) {
-    const gen_register = gen()
-    const resume = (response, convo) => {
-        if (response && response.text === 'abort') {
-            return convo.stop()
-        }
-        const err = response instanceof Error ? response : null
-        const result = err ? gen_register.throw(err) : gen_register.next((response || {}).text)
-        const { done, value } = result
-        if (done) {
-            return convo.next()
-        }
-        if (value.then) {
-            value.then(v => {
-                return resume({ text : v }, convo)
-            })
-            return 
-        }
-        const { 
-            say = null, ask = null, validate = () => true, key = null 
-        } = value
-        let { options = [] } = value
-        const { operation = null, timeout = 0 } = value
-        if (operation) {
-            if (operation === 'delay') {
-                setTimeout(() => {
-                    return resume(null, convo)
-                }, timeout)
-            } else if (operation === 'get_user') {
-                controller.storage.users.get(message.user, (err, user) => {
-                    if (err) {
-                        return resume(err, convo)
-                    } else {
-                        return resume({ text : user }, convo)
-                    }
-                })
-                
-            } else if (operation === 'delete_user') {
-                controller.storage.users.delete(message.user, (err, user) => {
-                    if (err) {
-                        return resume(err, convo)
-                    } else {
-                        return resume(null, convo)
-                    }
-                })
-            } else if (operation === 'store_user_temp_data') {
-                controller.storage.users.get(message.user, (err, user) => {
-                    if (err) {
-                        user = {
-                            id : message.user,
-                            tempdata : {}
-                        }
-                    }
-                    const { data } =  value
-                    user = { ...user, tempdata : { ...user.tempdata, ...data } }
-                    controller.storage.users.save(user, (err) => {
-                        if (err) {
-                            return resume(err, convo)
-                        } else {
-                            return resume(null, convo)
-                        }
-                    })    
-                })
-            }
-        }
-        if (say) {
-            convo.say(say)
-            return resume(null, convo)
-        } else if (ask) {
-            let opts = {}
-            if (key) {
-                opts = { ...opts, key }
-            }
-            if (options && options.length > 0) {
-                let defaultCallback = (response, convo) => {
-                    convo.repeat()
-                    convo.next()
-                }
-                const wrappedResume = (answer, convo) => {
-                    resume({ text : answer }, convo)
-                    convo.next()
-                }
-
-                const callbacks = [ 
-                    ...options.map(({ pattern, answer }) => ({ pattern, callback : (_, convo) => wrappedResume(answer, convo) })), 
-                    {
-                        default: true,
-                        callback : defaultCallback
-                    }
-                ]
-                convo.ask(ask, callbacks, opts)
-            } else {
-                const wrappedResume = (response, convo) => {
-                    if (validate(response.text)) {
-                        resume(response, convo)
-                    } else {
-                        convo.repeat()
-                    }
-                    convo.next()
-                }
-                convo.ask(ask, wrappedResume, opts)
-            }
-            
-            convo.next()
-        }
-    }
-    return { resume }
-}
 
 function listenForTest(controller) {
-    controller.hears(['test'], 'direct_message,direct_mention,mention', function(bot, message) {
-        const user = {
-            id : message.user,
-            name : 'testname'
+    controller.hears(
+        ['test'],
+        'direct_message,direct_mention,mention',
+        function(bot, message) {
+            const user = {
+                id: message.user,
+                name: 'testname',
+            };
+            controller.storage.users.save(user, (err) => {
+                bot.reply(message, err ? 'Something went wrong' : 'Done!');
+            });
         }
-        controller.storage.users.save(user, (err) => {
-            bot.reply(message, err ? 'Something went wrong' : 'Done!')
-        })
-    })
+    );
 }
 
 function listenForErase(controller) {
-    controller.hears(['erase'], 'direct_message,direct_mention,mention', function(bot, message) {
-        handleErase(controller, bot, message)
-    })
+    controller.hears(
+        ['erase'],
+        'direct_message,direct_mention,mention',
+        function(bot, message) {
+            handleErase(controller, bot, message);
+        }
+    );
 }
 
 async function getUserAsync(controller, id) {
-    return Promise.promisify(controller.storage.users.get.bind(controller.storage.users))(id)
+    try {
+        return await Promise.promisify(
+            controller.storage.users.get.bind(controller.storage.users)
+        )(id);
+    } catch (err) {}
+    return null;
 }
 
 async function saveUserAsync(controller, user) {
-    return Promise.promisify(controller.storage.users.save.bind(controller.storage.users))(user)
+    return Promise.promisify(
+        controller.storage.users.save.bind(controller.storage.users)
+    )(user);
 }
 
 async function deleteUserAsync(controller, id) {
-    return Promise.promisify(controller.storage.users.delete.bind(controller.storage.users))(id)
+    return Promise.promisify(
+        controller.storage.users.delete.bind(controller.storage.users)
+    )(id);
 }
 
 async function saveUserTempDataAsync(controller, id, data) {
-    let user = { id }
-    try {
-        user = await getUserAsync(controller, id)
-    } catch (err) {}
+    let user = await getUserAsync(controller, id);
+    if (!user) {
+        user = {id};
+    }
 
-    user = { ...user, tempdata : { ...user.tempdata, ...data } }
+    user = {...user, tempdata: {...user.tempdata, ...data}};
 
-    await saveUserAsync(controller, user)
+    await saveUserAsync(controller, user);
+}
+
+async function getUserTempDataAsync(controller, id) {
+    const user = await getUserAsync(controller, id);
+    const {tempdata = null} = (user || {});
+
+    return tempdata;
+}
+
+async function deleteUserTempDataAsync(controller, id) {
+    let user = await getUserAsync(controller, id);
+    const {tempdata = null, ...restUser} = user;
+    user = {...restUser, id};
+
+    await saveUserAsync(controller, user);
 }
 
 async function startConvo(bot, message) {
-    return Promise.promisify(bot.startConversation.bind(bot))(message)
+    return Promise.promisify(bot.startConversation.bind(bot))(message);
 }
 
-async function convoAskForValue(convo, question, validate = v => true) {
+function checkForAbortRequest(text) {
+    const t = text.trim().toLowerCase();
+    return t === 'quit' || t === 'abort';
+}
 
-    return new Promise((resolve, reject) => {
+async function convoAskForValue(convo, question,
+    transform = (v) => v, validate = () => true) {
+    return new Promise((resolve, _) => {
         convo.ask(question, (response, convo) => {
-            if (validate(response.text)) {
-                resolve(response.text)
-            } else {
-                convo.repeat()
+            if (checkForAbortRequest(response.text)) {
+                convo.stop();
+                return;
             }
-            convo.next()
-        }, {})
-    })
+            const v = transform(response.text);
+            if (validate(v)) {
+                resolve(v);
+            } else {
+                convo.repeat();
+            }
+            convo.next();
+        }, {});
+    });
 }
+
+const defaultPatternOpts = (bot) => [
+    {
+        pattern: bot.utterances.yes,
+        answer: true,
+    },
+    {
+        pattern: bot.utterances.no,
+        answer: false,
+    },
+];
 
 async function convoAskForPattern(convo, question, options) {
-
-    return new Promise((resolve, reject) => {
-        let opts = {}
+    return new Promise((resolve, _) => {
+        let opts = {};
 
         let defaultCallback = (response, convo) => {
-            convo.repeat()
-            convo.next()
-        }
+            if (checkForAbortRequest(response.text)) {
+                convo.stop();
+                return;
+            }
+            convo.repeat();
+            convo.next();
+        };
 
         let wrappedResponse = (answer, convo) => {
-            resolve(answer)
-            convo.next()
-        }
+            resolve(answer);
+            convo.next();
+        };
 
-        const callbacks = [ 
-            ...options.map(({ pattern, answer }) => ({ pattern, callback : (_, convo) => wrappedResponse(answer, convo) })), 
+        const callbacks = [
+            ...options.map(
+                ({pattern, answer}) => ({
+                    pattern,
+                    callback: (_, convo) => wrappedResponse(answer, convo)
+                })
+            ),
             {
                 default: true,
-                callback : defaultCallback
-            }
-        ]
+                callback: defaultCallback,
+            },
+        ];
 
-        convo.ask(question, callbacks, opts)
-    })
+        convo.ask(question, callbacks, opts);
+    });
 }
 
 async function handleErase(controller, bot, message) {
-    let user = null
-    try {
-        user = await getUserAsync(controller, message.user)
-    } catch (err) {
-        bot.reply(message, `I don't know you. Who do you think you are?`)
-        return
+    let user = await getUserAsync(controller, message.user);
+    if (!user) {
+        bot.reply(message, `I don't know you. Who do you think you are?`);
+        return;
     }
 
-    const convo = await startConvo(bot, message)
-    convo.on('end', convo => {
+    const convo = await startConvo(bot, message);
+    convo.on('end', (convo) => {
         if (convo.status !== 'completed') {
-            bot.reply(message, 'Aborting!')
+            bot.reply(message, 'Aborting!');
         }
-    })
+    });
 
     const confirmed = await convoAskForPattern(
-        convo, 
+        convo,
         `I'll erase my dossier on you. Sure about that?`,
-        [
-            {
-                pattern : bot.utterances.yes,
-                answer : true
-            },
-            {
-                pattern : bot.utterances.no,
-                answer : false
-            },
-        ]   
-    )
+        defaultPatternOpts(bot)
+    );
 
     if (!confirmed) {
-        convo.say(`That's what I thought. Wise choice`)
-        return
+        convo.say(`That's what I thought. Wise choice`);
+        return;
     }
 
-    convo.say(`As you wish...`)
-    
-    await deleteUserAsync(controller, message.user)
+    convo.say(`As you wish...`);
 
-    convo.say(`You're gone. Poof!`)
+    await deleteUserAsync(controller, message.user);
 
-    convo.next()
+    convo.say(`You're gone. Poof!`);
+
+    convo.next();
 }
 
 function listenForGithubRegister(controller) {
     controller.hears(['github'], 'direct_message,direct_mention,mention', function(bot, message) {
-        handleGithubRegister(controller, bot, message)
-    })
+        handleGithubRegister(controller, bot, message);
+    });
 }
 
 async function waitForGithubAccessToken() {
     return new Promise((resolve, reject) => {
-        let successHandler = null
-        let errorHandler = null
-        let unsubscribed = false
+        let successHandler = null;
+        let errorHandler = null;
+        let unsubscribed = false;
         let unsubscribe = () => {
             if (!unsubscribed) {
-                unsubscribed = true
-                githubAuthEvent.off('success', successHandler)
-                githubAuthEvent.off('error', errorHandler)
-            }   
-        }
-        successHandler = access_token => {
+                unsubscribed = true;
+                githubAuthEvent.off('success', successHandler);
+                githubAuthEvent.off('error', errorHandler);
+            }
+        };
+        successHandler = (access_token) => {
             console.log('success', access_token);
-            unsubscribe()
-            resolve(access_token)
-        }
-        errorHandler = err => {
+            unsubscribe();
+            resolve(access_token);
+        };
+        errorHandler = (err) => {
             console.error('err');
-            unsubscribe()
-            reject(err)
-        }
-        githubAuthEvent.on('success', successHandler)
-        githubAuthEvent.on('error', errorHandler)
+            unsubscribe();
+            reject(err);
+        };
+        githubAuthEvent.on('success', successHandler);
+        githubAuthEvent.on('error', errorHandler);
         setTimeout(() => {
-            unsubscribe()
-            reject(new Promise.TimeoutError())
-        }, 120 * 1000)
-    })
+            unsubscribe();
+            reject(new Promise.TimeoutError());
+        }, 120 * 1000);
+    });
 }
 
 async function handleGithubRegister(controller, bot, message) {
-    const convo = await startConvo(bot, message)
-    convo.on('end', convo => {
+    const convo = await startConvo(bot, message);
+    convo.on('end', (convo) => {
         if (convo.status === 'completed') {
             // bot.reply(message, 'Done!')
         } else {
-            bot.reply(message, 'Aborting!')
+            bot.reply(message, 'Aborting!');
         }
-    })
+    });
 
     const url = await convoAskForValue(
-        convo, 
+        convo,
         `What's your github repo url for #100daysofcode?`,
-    )
+    );
 
-    const callback_url = `${SlackConfig.base_url}/callbacks/github`
+    const callbackUrl = `${SlackConfig.base_url}/callbacks/github`;
 
-    let secret = ''
+    let secret = '';
     try {
-        secret = await Promise.promisify(tokens.secret.bind(tokens))()
-    } catch(err) {
-        console.log(err)
-        throw err
+        secret = await Promise.promisify(tokens.secret.bind(tokens))();
+    } catch (err) {
+        console.log(err);
+        throw err;
     }
 
-    const state = tokens.create(secret)
+    const state = tokens.create(secret);
 
-    const auth_link = `https://github.com/login/oauth/authorize?client_id=${SlackConfig.client_id}&scope=public_repo&redirect_uri=${callback_url}&state=${state}`
-    
-    convo.say(`\<${auth_link}|Authorize me>. You have 120 seconds. Go!`)
+    const authLink = `https://github.com/login/oauth/authorize?client_id=${SlackConfig.client_id}&scope=public_repo&redirect_uri=${callbackUrl}&state=${state}`;
 
-    let access_token = null
+    convo.say(`\<${authLink}|Authorize me>. You have 120 seconds. Go!`);
+
+    let accessToken = null;
     try {
-        access_token = await waitForGithubAccessToken()
+        accessToken = await waitForGithubAccessToken();
     } catch (err) {
         console.error(err);
-        convo.say('Tough luck. If only you could follow a simple instruction. Try again later.')
-        convo.next()
+        convo.say('Tough luck. If only you could follow a simple instruction. Try again later.');
+        convo.next();
     }
 
-    await saveUserTempDataAsync(controller, message.user, { access_token, github_repo_url : url })
+    await saveUserTempDataAsync(controller, message.user,
+        {accessToken, github_repo_url: url});
 
-    convo.say(`Great. Let me check of what you've been doing so far.`)
-    
-    await Promise.delay(2000)
-    
-    convo.next()
+    convo.say(`Great. Let me check of what you've been doing so far.`);
 }
 
-// function runGithubRegister(controller, bot, message) {
-//     const { resume } = setupSequence(githubRegisterSequence, controller, bot, message)
-    
-//     bot.startConversation(message, (err, convo) => {
-//         convo.on('end', convo => {
-//             if (convo.status === 'completed') {
-//                 bot.reply(message, 'Done!')
-//             } else {
-//                 bot.reply(message, 'Aborting!')
-//             }
-//         })
-//         return resume(null, convo)
-//     })
-// }
-
-// function* githubRegisterSequence(controller, bot, message) {
-//     const url = yield {
-//         ask : `What's your github repo url for #100daysofcode?`
-//     }
-//     const callback_url = `${SlackConfig.base_url}/callbacks/github`
-    
-//     let secret = ''
-//     try {
-//         secret = yield Promise.promisify(tokens.secret.bind(tokens))()
-//     } catch(err) {
-//         console.log(err)
-//         throw err
-//     }
-    
-//     const state = tokens.create(secret)
-
-//     const auth_link = `https://github.com/login/oauth/authorize?client_id=${SlackConfig.client_id}&scope=public_repo&redirect_uri=${callback_url}&state=${state}`
-//     yield {
-//         say : `\<${auth_link}|Authorize me>. You have 120 seconds. Go!`
-//     }
-
-//     let access_token = null
-//     try {
-//         access_token = yield new Promise((resolve, reject) => {
-//             let successHandler = null
-//             let errorHandler = null
-//             let unsubscribed = false
-//             let unsubscribe = () => {
-//                 if (!unsubscribed) {
-//                     unsubscribed = true
-//                     githubAuthEvent.off('success', successHandler)
-//                     githubAuthEvent.off('error', errorHandler)
-//                 }   
-//             }
-//             successHandler = access_token => {
-//                 console.log('success', access_token);
-//                 unsubscribe()
-//                 resolve(access_token)
-//             }
-//             errorHandler = err => {
-//                 console.error('err');
-//                 unsubscribe()
-//                 reject(err)
-//             }
-//             githubAuthEvent.on('success', successHandler)
-//             githubAuthEvent.on('error', errorHandler)
-//             setTimeout(() => {
-//                 unsubscribe()
-//                 reject(new Promise.TimeoutError())
-//             }, 120 * 1000)
-//         })
-//     } catch(err) {
-//         console.error(err);
-//         yield {
-//             say : 'Tough luck. If only you could follow a simple instruction. Try again later.'
-//         }
-//         return
-//     }
-
-//     yield { operation : 'store_user_temp_data', data : { access_token, github_repo_url : url } }
-
-//     yield {
-//         say : `Great. Let me check of what you've been doing so far.`
-//     }
-
-// }
-
 async function handleGithubCallback(req, res) {
-    const { code, state } = req.query
-    
+    const {code, state} = req.query;
+
     // TODO: verify csrf token
     const response = await axios.post('https://github.com/login/oauth/access_token', {
-        client_id : SlackConfig.client_id,
-        client_secret : SlackConfig.client_secret,
+        client_id: SlackConfig.client_id,
+        client_secret: SlackConfig.client_secret,
         code,
         state,
-    })
+    });
 
-    const { access_token } = qs.parse(response.data)
-    
-    console.log(access_token)
+    const {access_token} = qs.parse(response.data);
 
-    githubAuthEvent.emit('success', access_token)
-    
-    res.send('Authorization successful. You may close this tab.')
+    console.log(access_token);
+
+    githubAuthEvent.emit('success', access_token);
+
+    res.send('Authorization successful. You may close this tab.');
 }
 
 
 function listenForRegister(controller) {
     controller.hears(['register', 'setup'], 'direct_message', function(bot, message) {
-        runRegister(controller, bot, message)
-    })
+        handleRegister(controller, bot, message);
+    });
 }
 
-function runRegister(controller, bot, message) {
-    const { resume } = setupSequence(registerSequence, controller, bot, message)
+async function handleRegister(controller, bot, message) {
+    const convo = await startConvo(bot, message);
+    convo.on('end', (convo) => {
+        if (convo.status === 'completed') {
+            // bot.reply(message, 'All set! Creating a dossier on you...hang tight');
 
-    bot.startConversation(message, (err, convo) => {
-        convo.on('end', convo => {
-            if (convo.status === 'completed') {
-                bot.reply(message, 'All set! Creating a dossier on you...hang tight');
-                
-                user = {
-                    id: message.user,
-                    name : convo.extractResponse('name'),
-                    startdate : convo.extractResponse('start_date'),
-                    missed_dates : convo.extractResponse('missed_dates'),
-                    github_repo_url : convo.extractResponse('github_repo_url'),
-                }
-                console.log(JSON.stringify(user))
-                // controller.storage.users.save(user, function(err, id) {
-                setTimeout(() => {
-                    bot.reply(message, `Done! Welcome ${user.name} :wave:!`);
-                }, 1000)
-                // });
-            } else {
-                bot.reply(message, 'Aborting!')
-            }
-        })
-        return resume(null, convo)
-    })
-}
+            // user = {
+            //     id: message.user,
+            //     // name : convo.extractResponse('name'),
+            //     // startdate : convo.extractResponse('start_date'),
+            //     // missed_dates : convo.extractResponse('missed_dates'),
+            //     // github_repo_url : convo.extractResponse('github_repo_url'),
+            // };
+            // console.log(JSON.stringify(user));
+            // // controller.storage.users.save(user, function(err, id) {
+            // setTimeout(() => {
+            //     bot.reply(message, `Done! Welcome ${user.name} :wave:!`);
+            // }, 1000);
+            // });
+        } else {
+            bot.reply(message, 'Aborting!');
+        }
+    });
 
-function* registerSequence() {
-    yield { say : "Alright! let's get you all squanched up!" }
-    const name = yield { ask : "What do I call you?", key : 'name' }
-    yield { say : `Will call you ${name}` }
-    
-    yield { 
-        ask : "When did you start the challenge?",
-        validate : date => chrono.parseDate(date),
-        key : 'start_date',
-    }
-    
-    const didMissDays = yield {
-        ask : "Did you miss any days?",
-        options : [
-            {
-                pattern : bot.utterances.yes,
-                answer : true
-            },
-            {
-                pattern : bot.utterances.no,
-                answer : false
-            },
-        ]
-    }
-    
-    if (didMissDays) {
-        yield {
-            ask : "Which days did you miss?",
-            validate : text => true,
-            key : 'missed_dates'
+    const tempdata = await getUserTempDataAsync(controller, message.user);
+
+    let newSession = true;
+
+    let name = undefined;
+    let start_date = undefined; 
+    let missed_dates = undefined; 
+    let githubUrl = undefined;
+    if (tempdata) {
+        const choice = await convoAskForPattern(
+            convo,
+            'Shall we - A) pick up where we left off? OR B) start with a blank slate?',
+            [
+                {
+                    pattern: /^[aA]$/,
+                    answer: 'a',
+                },
+                {
+                    pattern: /^[bB]$/,
+                    answer: 'b',
+                },
+            ]
+        );
+        if (choice === 'a') {
+            name = tempdata.name;
+            start_date = tempdata.start_date;
+            missed_dates = tempdata.missed_dates;
+            githubUrl = tempdata.githubUrl;
+
+            newSession = false;
+
+            convo.say('Alright, so where were we?');
+        } else if (choice === 'b') {
+            await deleteUserTempDataAsync(controller, message.user);
+            convo.say('Blank slate it is!');
+        } else {
+            convo.say(`No time for this nonsense. Come back when you're not stupid.`);
+            convo.next();
+            return;
         }
     }
 
-    yield* githubRegisterSequence()
-    
-    // yield {
-    //     ask : `What's your github repo url for #100daysofcode?`,
-    //     key : 'github_repo_url'
-    // }
+    if (newSession) {
+        convo.say('Alright! let\'s get you all squanched up!');
+    }
+
+    if (!name) {
+        name = await convoAskForValue(convo, 'What do I call you?');
+
+        await saveUserTempDataAsync(controller, message.user, {name});
+
+        convo.say(`Will call you ${name}`);
+    }
+
+    if (!start_date) {
+        start_date = await convoAskForValue(
+            convo,
+            'When did you start the challenge?',
+            (date) => chrono.parseDate(date),
+        );
+
+        await saveUserTempDataAsync(controller, message.user, {start_date});
+    }
+
+    if (missed_dates === undefined) {
+        const didMissDays = await convoAskForPattern(
+            convo,
+            'Did you miss any days?',
+            defaultPatternOpts(bot)
+        );
+
+        if (didMissDays) {
+            let retries = 2;
+            let success = false;
+            while (retries > 0) {
+                missed_dates = await convoAskForValue(
+                    convo,
+                    'Which days did you miss?',
+                    (text) => text.split(',').map((t) => chrono.parseDate(t)).filter((v) => v),
+                    (dates) => dates.length > 0,
+                );
+
+                const missed_dates_str = missed_dates.map((v) => moment(v).format('ll')).join(', ');
+
+                const affirmative = await convoAskForPattern(
+                    convo,
+                    `Just to confirm, are these the days you missed? - ${missed_dates_str}`,
+                    defaultPatternOpts(bot)
+                );
+
+                if (affirmative) {
+                    await saveUserTempDataAsync(controller, message.user, {missed_dates});
+                    success = true;
+                    break;
+                }
+                retries--;
+            }
+
+            if (!success) {
+                convo.say(`I'm going to assume you have nothing useful to say. Moving on.`);
+            }
+        }
+    }
+
+    if (!githubUrl) {
+        let url = await convoAskForValue(
+            convo,
+            `What's your github repo url for #100daysofcode?`,
+        );
+
+        url = url.trim('<>');
+        console.log(url);
+        
+
+        let validatedRepo = false;
+        try {
+            const response = await axios.head(url);
+            console.log(response);
+        } catch (err) {
+            console.error(err);
+        }
+
+        if (!validatedRepo) {
+            convo.say(`I need a repo to work with. Don't you get it?`);
+            return;
+        }
+    }
 }
 
 function listenForWhoami(controller) {
@@ -526,19 +467,26 @@ function listenForWhoami(controller) {
             } else {
                 bot.reply(message, `Why would I know who you are? Register yourself first.`);
             }
-        })
-    })
+        });
+    });
+}
+
+function listenFoEverythingElse(controller) {
+    controller.hears([/.*/], 'direct_message,direct_mention', function(bot, message) {
+        bot.reply(message, `Wubba lubba dub dub. That makes just as much sense. Get your verbs together.`);
+    });
 }
 
 function init(controller) {
-    listenForRegister(controller)
-    listenForErase(controller)
-    listenForWhoami(controller)
-    listenForTest(controller)
-    listenForGithubRegister(controller)
+    listenForRegister(controller);
+    listenForErase(controller);
+    listenForWhoami(controller);
+    listenForTest(controller);
+    listenForGithubRegister(controller);
+    listenFoEverythingElse(controller);
 }
 
 module.exports = {
     init,
-    handleGithubCallback
-}
+    handleGithubCallback,
+};
