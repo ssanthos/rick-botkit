@@ -6,6 +6,7 @@ const moment = require('moment');
 const chrono = require('chrono-node');
 const Tokens = require('csrf');
 const axios = require('axios');
+const octokit = require('@octokit/rest')()
 
 const SlackConfig = require('../slack-config.json');
 
@@ -114,6 +115,23 @@ async function convoAskForValue(convo, question,
             convo.next();
         }, {});
     });
+}
+
+function extractLink(text) {
+    // https://api.slack.com/docs/formatting
+    // Based on https://raw.githubusercontent.com/slackapi/hubot-slack/ea562aeadab3f9f58e8db6ee5e86a4a41509db6a/src/slack.coffee
+    text = text.replace(/<([@#!])?([^>|]+)(?:\|([^>]+))?>/g, (m, type, link, label) => {
+        if (type !== '@' || type !== '#' || type !== '!') {
+            link = link.replace(/^mailto:/, '')
+            return link
+        } else {
+            ''
+        }
+    })
+    text = text.replace(/&lt;/g, '<')
+    text = text.replace(/&gt;/g, '>')
+    text = text.replace(/&amp;/g, '&')
+    return text
 }
 
 const defaultPatternOpts = (bot) => [
@@ -337,7 +355,7 @@ async function handleRegister(controller, bot, message) {
     let name = undefined;
     let start_date = undefined; 
     let missed_dates = undefined; 
-    let githubUrl = undefined;
+    let github_url = undefined;
     if (tempdata) {
         const choice = await convoAskForPattern(
             convo,
@@ -357,7 +375,7 @@ async function handleRegister(controller, bot, message) {
             name = tempdata.name;
             start_date = tempdata.start_date;
             missed_dates = tempdata.missed_dates;
-            githubUrl = tempdata.githubUrl;
+            github_url = tempdata.github_url;
 
             newSession = false;
 
@@ -434,22 +452,79 @@ async function handleRegister(controller, bot, message) {
         }
     }
 
-    if (!githubUrl) {
-        let url = await convoAskForValue(
+    if (!github_url) {
+
+        const callbackUrl = `${SlackConfig.base_url}/callbacks/github`;
+
+        let secret = '';
+        try {
+            secret = await Promise.promisify(tokens.secret.bind(tokens))();
+        } catch (err) {
+            console.log(err);
+            throw err;
+        }
+
+        const state = tokens.create(secret);
+
+        const authLink = `https://github.com/login/oauth/authorize?client_id=${SlackConfig.client_id}&scope=public_repo&redirect_uri=${callbackUrl}&state=${state}`;
+
+        convo.say(`\<${authLink}|Authorize me>. You have 120 seconds. Go!`);
+
+        let access_token = null;
+        try {
+            access_token = await waitForGithubAccessToken();
+        } catch (err) {
+            console.error(err);
+            convo.say('Tough luck. If only you could follow a simple instruction. Try again later.');
+            convo.next();
+        }
+
+        await saveUserTempDataAsync(controller, message.user,
+            { access_token });
+
+        octokit.authenticate({
+            type: 'oauth',
+            token: access_token
+        })
+
+        const result = await octokit.repos.getAll({
+            type : 'owner', per_page : 100
+        })
+
+        const repos = result.data.map(({ id, full_name }) => ({ id, full_name }))
+
+        console.log(repos);
+
+        const repos_list_str = repos.map((r, i) => `[${i+1}] ${r.full_name}`).join('\n')
+
+        const repoId = await convoAskForPattern(
+            convo,
+            "Which is the 100 days of code repo?" + '\n' + repos_list_str,
+            repos.map((r, i) => {
+                return {
+                    pattern : new RegExp(`/^${i+1}$/`,"g"),
+                    answer : r.id
+                }
+            })
+        )
+
+        console.log(repoId);
+
+        let resText = await convoAskForValue(
             convo,
             `What's your github repo url for #100daysofcode?`,
         );
 
-        url = url.trim('<>');
-        console.log(url);
-        
+        github_url = extractLink(resText)
 
-        let validatedRepo = false;
-        try {
-            const response = await axios.head(url);
-            console.log(response);
-        } catch (err) {
-            console.error(err);
+        if (!github_url) {
+            convo.say(`That's not a link. You think I'm stupid?`);
+            return
+        }
+
+        if (!/^(http|https):\/\/github.com/.test(github_url)) {
+            convo.say(`That's not a github repository. You think I'm stupid?`);
+            return
         }
 
         if (!validatedRepo) {

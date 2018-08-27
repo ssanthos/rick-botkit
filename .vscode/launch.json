@@ -10,6 +10,15 @@
             "name": "Launch bot",
             "cwd": "${workspaceFolder}/rick",
             "program": "${workspaceFolder}/rick/index.js"
+        },
+        {
+            "type": "node",
+            "name": "Attach bot",
+            "request": "attach",
+            "port": 9229,
+            "address": "localhost",
+            "restart": true,
+            "localRoot": "${workspaceFolder}/rick"
         }
     ]
 }
