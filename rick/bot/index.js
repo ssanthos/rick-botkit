@@ -325,10 +325,10 @@ function listenForRegister(controller) {
 }
 
 async function handleRegister(controller, bot, message) {
-    const convo = await startConvo(bot, message);
+    let convo = await startConvo(bot, message);
     convo.on('end', (convo) => {
         if (convo.status === 'completed') {
-            // bot.reply(message, 'All set! Creating a dossier on you...hang tight');
+            // bot.reply(message, `Done!`);
 
             // user = {
             //     id: message.user,
@@ -355,7 +355,7 @@ async function handleRegister(controller, bot, message) {
     let name = undefined;
     let start_date = undefined; 
     let missed_dates = undefined; 
-    let github_url = undefined;
+    let github_repo = undefined;
     if (tempdata) {
         const choice = await convoAskForPattern(
             convo,
@@ -375,7 +375,7 @@ async function handleRegister(controller, bot, message) {
             name = tempdata.name;
             start_date = tempdata.start_date;
             missed_dates = tempdata.missed_dates;
-            github_url = tempdata.github_url;
+            github_repo = tempdata.github_repo;
 
             newSession = false;
 
@@ -452,7 +452,7 @@ async function handleRegister(controller, bot, message) {
         }
     }
 
-    if (!github_url) {
+    if (!github_repo) {
 
         const callbackUrl = `${SlackConfig.base_url}/callbacks/github`;
 
@@ -491,46 +491,70 @@ async function handleRegister(controller, bot, message) {
             type : 'owner', per_page : 100
         })
 
-        const repos = result.data.map(({ id, full_name }) => ({ id, full_name }))
+        const repos = result.data.map(({ id, full_name, name, owner : { login } }) => ({ id, full_name, repo : name, owner : login }))
 
-        console.log(repos);
+        // console.log(repos);
 
-        const repos_list_str = repos.map((r, i) => `[${i+1}] ${r.full_name}`).join('\n')
+        const repo = repos.find(r => /(100).*(days)/g.test(r.full_name))
 
-        const repoId = await convoAskForPattern(
-            convo,
-            "Which is the 100 days of code repo?" + '\n' + repos_list_str,
-            repos.map((r, i) => {
-                return {
-                    pattern : new RegExp(`/^${i+1}$/`,"g"),
-                    answer : r.id
-                }
-            })
-        )
+        convo = await startConvo(bot, message);
 
-        console.log(repoId);
+        if (repo) {
+            const affirmative = await convoAskForPattern(
+                convo,
+                `Is this the repo? - ${repo.full_name}`,
+                defaultPatternOpts(bot)
+            )
+            if (affirmative) {
+                github_repo = repo
+            }
+        }
 
-        let resText = await convoAskForValue(
-            convo,
-            `What's your github repo url for #100daysofcode?`,
-        );
-
-        github_url = extractLink(resText)
-
-        if (!github_url) {
-            convo.say(`That's not a link. You think I'm stupid?`);
+        if (!github_repo) {
+            convo.say(`Grr. I can't find your repo.`)
             return
         }
+    
+        await saveUserTempDataAsync(controller, message.user,
+            { github_repo });
 
-        if (!/^(http|https):\/\/github.com/.test(github_url)) {
-            convo.say(`That's not a github repository. You think I'm stupid?`);
-            return
-        }
+        
+        // const repos_list_str = repos.map((r, i) => `[${i+1}] ${r.full_name}`).join('\n')
 
-        if (!validatedRepo) {
-            convo.say(`I need a repo to work with. Don't you get it?`);
-            return;
-        }
+        // const repoId = await convoAskForPattern(
+        //     convo,
+        //     "Which is the 100 days of code repo?" + '\n' + repos_list_str,
+        //     repos.map((r, i) => {
+        //         return {
+        //             pattern : new RegExp(`/^${i+1}$/`,"g"),
+        //             answer : r.id
+        //         }
+        //     })
+        // )
+
+        // console.log(repoId);
+
+        // let resText = await convoAskForValue(
+        //     convo,
+        //     `What's your github repo url for #100daysofcode?`,
+        // );
+
+        // github_url = extractLink(resText)
+
+        // if (!github_url) {
+        //     convo.say(`That's not a link. You think I'm stupid?`);
+        //     return
+        // }
+
+        // if (!/^(http|https):\/\/github.com/.test(github_url)) {
+        //     convo.say(`That's not a github repository. You think I'm stupid?`);
+        //     return
+        // }
+
+        // if (!validatedRepo) {
+        //     convo.say(`I need a repo to work with. Don't you get it?`);
+        //     return;
+        // }
     }
 }
 
